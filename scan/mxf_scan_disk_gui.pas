@@ -4,16 +4,18 @@
 
 uses
   System,
-  System.Diagnostics;
+  System.Diagnostics,
+  System.Threading;
 
-  
+
 begin
   var cd      := Environment.CurrentDirectory;
   var pythonw := '"' + cd + '\Python38\pythonw.exe"';
   var idle    := '"' + cd + '\scan.pyw"';
   
   var StartInfo := new ProcessStartInfo(pythonw, idle);
-  StartInfo.WindowStyle := ProcessWindowStyle.Hidden;
+  StartInfo.Verb := 'runas';
   var process := Process.Start(StartInfo);
-  while not process.HasExited do ;
+  while not process.HasExited do
+    Thread.Sleep(500);
 end.

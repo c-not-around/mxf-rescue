@@ -7,7 +7,7 @@ from tkinter   import messagebox
 from tkinter   import ttk
 from threading import *
 from time      import sleep
-from datetime  import datetime
+from datetime  import datetime, timedelta
 from os        import path
 from psutil    import disk_usage
 
@@ -55,7 +55,7 @@ def key_cmp(key, pattern):
 # convert from bcd
 def from_bcd(x):
     return 10 * (x >> 4) + (x & 0x0F)
-# 
+# read block from target disk
 def get_block(fs, offset, size=HDD_SECTOR_SIZE):
     adr = offset & 0xFFFFFFFFFFFFFE00
     ost = offset - adr
@@ -64,14 +64,14 @@ def get_block(fs, offset, size=HDD_SECTOR_SIZE):
     except:
         raise Exception("seek() error with offset = 0x%016X" % offset)
     return fs.read(size)[ost:]
-#
+# get int value from block
 def get_value(buffer, offset, size):
     value = 0
     for i in range(size):
         value <<= 8
         value |= buffer[offset+i]
     return value
-#
+# find mxf records in block
 def scan_record(fs, offset):
     block = get_block(fs, offset)
     if key_cmp(block, FRAME_HEADER_START):
@@ -141,7 +141,13 @@ def complete_file(fs, f_count, f_timestamp, f_fname):
     set_value(fs, pos, [0x001C, 0x002C, 0x2A23], pos,         8)
     set_value(fs, pos, TIMESTAMPS_OFFSETS,       f_timestamp, 4)
     fs.close()
-
+# Timedelta to string
+def td_str(td):
+    s = td % 60
+    td //= 60
+    m = td % 60
+    h = td // 60
+    return "%02i:%02i:%02i" % (h, m, s)
 
 class MxfHddScaner:
     def __init__(self):
@@ -172,16 +178,20 @@ class MxfHddScaner:
         self.start_offset.place(x=80, y=60, width=300)
         self.start_scan = Button(self.main_form, text="Start", command=self.start_scan_click)
         self.start_scan.place(x=385, y=60, width=60, height=self.start_offset["width"])
+        # Dummy mode
+        self.dummy_mode = IntVar()
+        self.d_mode = Checkbutton(self.main_form, text="Log only", variable=self.dummy_mode)
+        self.d_mode.place(x=80, y=83, width=65, height=15)
+        # Time progress
+        self.et_label = Label(self.main_form, text="Elapsed: 00:00:00")
+        self.et_label.place(x=180, y=83, width=90, height=15)
+        self.rt_label = Label(self.main_form, text="Remainig: 00:00:00")
+        self.rt_label.place(x=290, y=83, width=100, height=15)
         # Scan progress
         self.scan_progress = ttk.Progressbar(self.main_form, orient="horizontal",value=0)
         self.scan_progress.place(x=80, y=100, width=365, height=20)
         # Scan log
-        '''self.scan_log = Text(self.main_form, font=("consolas",10), wrap=NONE, state="disabled")
-        self.scan_log.pack(fill=BOTH, expand=True, padx=[5, 5], pady=[125, 5])
-        self.scan_log_scroll = Scrollbar(self.scan_log, command=self.scan_log.yview, orient=VERTICAL)
-        self.scan_log_scroll.pack(fill=Y, expand=True, anchor="ne") #padx=[420, 0], pady=[0, 0])'''
         self.sl_panel = Frame(self.main_form)
-        #self.sl_panel.pack(fill=BOTH, expand=True, padx=[5, 5], pady=[125, 5])
         self.sl_panel.pack(side=BOTTOM, fill=BOTH, expand=1, padx=[5, 5], pady=[125, 5])
         self.scan_log = Text(self.sl_panel, width=54, height=32, font=("consolas",10), wrap=NONE, state="disabled")
         self.scan_log.pack(side=LEFT, fill=BOTH, expand=1)
@@ -191,7 +201,14 @@ class MxfHddScaner:
         self.scan_log_menu = Menu(self.scan_log, tearoff=False)
         self.scan_log_menu.add_command(label="Copy", command=self.scan_log_menu_copy)
         self.scan_log_menu.add_command(label="Save", command=self.scan_log_menu_save)
+        self.scan_log_menu.add_command(label="Clear", command=self.scan_log_menu_clear)
         self.scan_log.bind("<Button-3>", self.scan_log_menu_handler)
+        self.scan_log.tag_configure("def", background="#FFFFFF", foreground="#000000")
+        self.scan_log.tag_configure("ok",  background="#FFFFFF", foreground="#008000")
+        self.scan_log.tag_configure("com", background="#FFFFFF", foreground="#0000FF")
+        self.scan_log.tag_configure("wrn", background="#FFFFFF", foreground="#FF8027")
+        self.scan_log.tag_configure("bad", background="#FFFFFF", foreground="#FF0000")
+        self.scan_log.tag_configure("fhf", background="#FFFFFF", foreground="#FF00FF")
 
     # Disk select handler
     def disk_list_select(self, event):
@@ -211,33 +228,37 @@ class MxfHddScaner:
     # Scan start button click
     def start_scan_click(self):
         if self.scan_state == "RUN":
+            self.scan_log_append("scan stop.\n")
             self.start_scan["state"] = "disabled"
             self.scan_state = "IDLE"
         else:
             if self.target_disk != None:
                 dst = self.dst_path.get()
                 if path.isdir(dst):
-                    self.destination = dst
-                    # Get start offset
-                    o = self.start_offset.get()
-                    try:
-                        self.offset = int(o)
-                    except:
-                        self.offset = 0
-                    self.start_offset.delete(0, END)
-                    self.start_offset.insert(END, str(self.offset))
-                    # Reset scan progress
-                    self.scan_progress["value"] = 0
-                    # Clear scan log
-                    self.scan_log_append("scan disk %s start by offset 0x%016X\n" % (self.target_disk[4:], self.offset))
-                    # Disable UI
-                    self.disk_list["state"]  = "disabled"
-                    self.dst_path["state"]   = "disabled"
-                    self.dst_select["state"] = "disabled"
-                    # Change button function
-                    self.start_scan["text"]  = "Stop"
-                    # Enable scan task
-                    self.scan_state = "RUN"
+                    if dst[0] != self.target_disk[4]:
+                        self.destination = dst
+                        # Get start offset
+                        o = self.start_offset.get()
+                        try:
+                            self.offset = int(o)
+                        except:
+                            self.offset = 0
+                        self.start_offset.delete(0, END)
+                        self.start_offset.insert(END, str(self.offset))
+                        # Reset scan progress
+                        self.scan_progress["value"] = 0
+                        # Clear scan log
+                        self.scan_log_append("scan disk %s start by offset 0x%016X\n" % (self.target_disk[4:], self.offset))
+                        # Disable UI
+                        self.disk_list["state"]  = "disabled"
+                        self.dst_path["state"]   = "disabled"
+                        self.dst_select["state"] = "disabled"
+                        # Change button function
+                        self.start_scan["text"]  = "Stop"
+                        # Enable scan task
+                        self.scan_state = "RUN"
+                    else:
+                        messagebox.showerror(title="error", message="Target disk and Destination path located on one disk!")
                 else:
                     messagebox.showerror(title="error", message="Destination path not selected!")
             else:
@@ -259,11 +280,18 @@ class MxfHddScaner:
             fd.write(self.scan_log.get("1.0", END))
             fd.close()
 
-    # Scan log append
-    def scan_log_append(self, text):
+    # Scan log clear
+    def scan_log_menu_clear(self):
         self.scan_log["state"] = "normal"
-        self.scan_log.insert(END, text)
+        self.scan_log.delete('1.0', END)
         self.scan_log["state"] = "disabled"
+    
+    # Scan log append
+    def scan_log_append(self, text, atr="def"):
+        self.scan_log["state"] = "normal"
+        self.scan_log.insert(END, text, atr)
+        self.scan_log["state"] = "disabled"
+        self.scan_log.see(END)
     
     # Main form closing handler
     def main_form_close(self, event):
@@ -275,6 +303,12 @@ class MxfHddScaner:
 
     # Scan
     def scan_sub_task(self):
+        m_dummy     = self.dummy_mode.get()
+        ds          = self.tg_disk_size - self.offset
+        step        = ds / 1000.0
+        pos         = 0
+        s_time      = datetime.now()
+        #
         f_offset    = self.offset
         l_offset    = None
         f_count     = 0
@@ -287,10 +321,11 @@ class MxfHddScaner:
             r_type, r_md = scan_record(f_disk, f_offset)
             if r_type == "FRAME_FULL":
                 n, h, m, s, f = r_md
-                '''# Complete file, if this frame is last in series
+                # Complete file, if this frame is last in series
                 if (f_prev_no != None) and ((n-1) != f_prev_no):
-                    complete_file(f_dst_fd, f_count, f_timestamp, f_fname)
-                    self.scan_log_append("%i frames saved to file <%s>\n\r\n" % (f_count, f_fname))
+                    if m_dummy == 0:
+                        complete_file(f_dst_fd, f_count, f_timestamp, f_fname)
+                    self.scan_log_append("%i frames saved to file <%s>\n\r\n" % (f_count, f_fname), "com")
                     f_count   = 0
                     f_prev_no = None
                     f_fname   = None
@@ -299,15 +334,17 @@ class MxfHddScaner:
                 if f_count == 0:
                     f_timestamp = to_timestamp(h, m, s, f)
                     f_fname     = "%s\\%016X.mxf" % (self.destination, f_offset)
-                    f_dst_fd    = open(f_fname, "wb")
+                    if m_dummy == 0:
+                        f_dst_fd    = open(f_fname, "wb")
                     l_offset    = f_offset
                 # Copy frame to destinaton file
-                f_disk.seek(f_offset)
-                buffer = f_disk.read(FRAME_SIZE)
-                f_dst_fd.seek(FILE_HEADER_SIZE+f_count*FRAME_SIZE)
-                f_dst_fd.write(buffer)'''
+                if m_dummy == 0:
+                    f_disk.seek(f_offset)
+                    buffer = f_disk.read(FRAME_SIZE)
+                    f_dst_fd.seek(FILE_HEADER_SIZE+f_count*FRAME_SIZE)
+                    f_dst_fd.write(buffer)
                 # Print frame info
-                self.scan_log_append("%016X: FRAME_FULL no=%i %02i:%02i:%02i.%02i\n" % (f_offset, n, h, m, s, f*4))
+                self.scan_log_append("%016X: FRAME_FULL no=%i %02i:%02i:%02i.%02i\n" % (f_offset, n, h, m, s, f*4), "ok")
                 # to next frame
                 f_count  += 1
                 f_prev_no = n
@@ -315,23 +352,36 @@ class MxfHddScaner:
             else:
                 if r_type == "FRAME_DATA" or r_type == "FRAME_HEADER":
                     n, h, m, s, f = r_md
-                    self.scan_log_append("%016X: %s no=%i %02i:%02i:%02i.%02i\n" % (f_offset, r_type, n, h, m, s, f*4))
+                    self.scan_log_append("%016X: %s no=%i %02i:%02i:%02i.%02i\n" % (f_offset, r_type, n, h, m, s, f*4), "wrn")
                 elif r_type == "FILE_HEADER" or r_type == "FILE_FOOTER":
                     d, t, p = r_md
                     h, m, s, f = from_timestamp(t)
-                    self.scan_log_append("%016X: %s frames=%i timecode=%02i:%02i:%02i.%02i FP=0x%016X\n" % (f_offset, r_type, d, h, m, s, f*4, p))
-                '''if f_count != 0:
-                    complete_file(f_dst_fd, f_count, f_timestamp, f_fname)
-                    self.scan_log_append("%i frames saved to file <%s>\n\r\n" % (f_count, f_fname))
+                    self.scan_log_append("%016X: %s frames=%i timecode=%02i:%02i:%02i.%02i FP=0x%016X\n" % (f_offset, r_type, d, h, m, s, f*4, p), "fhf")
+                if f_count != 0:
+                    if m_dummy == 0:
+                        complete_file(f_dst_fd, f_count, f_timestamp, f_fname)
+                    self.scan_log_append("%i frames saved to file <%s>\n\r\n" % (f_count, f_fname), "com")
                     f_count   = 0
                     f_prev_no = None
                     f_fname   = None
-                    l_offset  = None'''
+                    l_offset  = None
                 f_offset += 256
-            if (f_offset & 0x000000003FFFFFFF) == 0:
-                p = (f_offset - self.offset) / (self.tg_disk_size - self.offset) * 100.0
-                self.scan_progress["value"] = p
+            # Progress update
+            ps = (f_offset - self.offset) // step 
+            if ps > pos:
+                # Progress
+                pos = ps
+                per = (f_offset - self.offset) / ds
+                self.scan_progress["value"] = per * 100.0
+                # Time
+                e_time = (datetime.now() - s_time).total_seconds()
+                r_time = e_time * (1.0 / per - 1.0)
+                self.et_label["text"] = "Elapsed: %s" % td_str(e_time)
+                self.rt_label["text"] = "Remainig: %s" % td_str(r_time)
+            # Check end of disk
             if f_offset >= self.tg_disk_size:
+                self.scan_progress["value"] = 100
+                self.scan_log_append("scan end.\n")
                 self.scan_state = "IDLE"
                 l_offset = 0
         f_disk.close()
@@ -343,7 +393,7 @@ class MxfHddScaner:
     def scan_task(self):
         while self.scan_state != "COMPLETED":
             while self.scan_state == "IDLE":
-                pass
+                sleep(0.1)
             # SCAN
             if self.scan_state == "RUN":
                 self.scan_sub_task()
@@ -384,4 +434,5 @@ class MxfHddScaner:
         # Run main form dispatch message cycle
         self.main_form.mainloop()
 
-MxfHddScaner().run()
+
+MxfHddScaner().run()#1213385728
