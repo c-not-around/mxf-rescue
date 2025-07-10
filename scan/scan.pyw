@@ -193,22 +193,23 @@ class MxfHddScaner:
         # Scan log
         self.sl_panel = Frame(self.main_form)
         self.sl_panel.pack(side=BOTTOM, fill=BOTH, expand=1, padx=[5, 5], pady=[125, 5])
-        self.scan_log = Text(self.sl_panel, width=54, height=32, font=("consolas",10), wrap=NONE, state="disabled")
+        self.scan_log = Text(self.sl_panel, width=54, height=32, font=("consolas",10), wrap=NONE)
         self.scan_log.pack(side=LEFT, fill=BOTH, expand=1)
         self.scan_log_scroll = Scrollbar(self.sl_panel, command=self.scan_log.yview, orient=VERTICAL)
         self.scan_log_scroll.pack(anchor=SE, fill=Y, expand=1)
+        self.scan_log.bind("<Key>", lambda event: "break")
         self.scan_log["yscrollcommand"] = self.scan_log_scroll.set 
         self.scan_log_menu = Menu(self.scan_log, tearoff=False)
         self.scan_log_menu.add_command(label="Copy", command=self.scan_log_menu_copy)
         self.scan_log_menu.add_command(label="Save", command=self.scan_log_menu_save)
         self.scan_log_menu.add_command(label="Clear", command=self.scan_log_menu_clear)
         self.scan_log.bind("<Button-3>", self.scan_log_menu_handler)
-        self.scan_log.tag_configure("def", background="#FFFFFF", foreground="#000000")
-        self.scan_log.tag_configure("ok",  background="#FFFFFF", foreground="#008000")
-        self.scan_log.tag_configure("com", background="#FFFFFF", foreground="#0000FF")
-        self.scan_log.tag_configure("wrn", background="#FFFFFF", foreground="#FF8027")
-        self.scan_log.tag_configure("bad", background="#FFFFFF", foreground="#FF0000")
-        self.scan_log.tag_configure("fhf", background="#FFFFFF", foreground="#FF00FF")
+        self.scan_log.tag_configure("def", background="#FFFFFF", foreground="#000000", selectbackground="#AAAAAA", selectforeground="#3A3A3A")
+        self.scan_log.tag_configure("ok",  background="#FFFFFF", foreground="#008000", selectbackground="#AAAAAA", selectforeground="#3A3A3A")
+        self.scan_log.tag_configure("com", background="#FFFFFF", foreground="#0000FF", selectbackground="#AAAAAA", selectforeground="#3A3A3A")
+        self.scan_log.tag_configure("wrn", background="#FFFFFF", foreground="#FF8027", selectbackground="#AAAAAA", selectforeground="#3A3A3A")
+        self.scan_log.tag_configure("bad", background="#FFFFFF", foreground="#FF0000", selectbackground="#AAAAAA", selectforeground="#3A3A3A")
+        self.scan_log.tag_configure("fhf", background="#FFFFFF", foreground="#FF00FF", selectbackground="#AAAAAA", selectforeground="#3A3A3A")
 
     # Disk select handler
     def disk_list_select(self, event):
@@ -230,7 +231,7 @@ class MxfHddScaner:
         if self.scan_state == "RUN":
             self.scan_log_append("scan stop.\n")
             self.start_scan["state"] = "disabled"
-            self.scan_state = "IDLE"
+            self.scan_state = "STOP"
         else:
             if self.target_disk != None:
                 dst = self.dst_path.get()
@@ -257,6 +258,8 @@ class MxfHddScaner:
                         self.start_scan["text"]  = "Stop"
                         # Enable scan task
                         self.scan_state = "RUN"
+                        self.scan_thread = Thread(target=self.scan_task, args=(), daemon=True)
+                        self.scan_thread.start()
                     else:
                         messagebox.showerror(title="error", message="Target disk and Destination path located on one disk!")
                 else:
@@ -282,27 +285,24 @@ class MxfHddScaner:
 
     # Scan log clear
     def scan_log_menu_clear(self):
-        self.scan_log["state"] = "normal"
         self.scan_log.delete('1.0', END)
-        self.scan_log["state"] = "disabled"
     
     # Scan log append
     def scan_log_append(self, text, atr="def"):
-        self.scan_log["state"] = "normal"
         self.scan_log.insert(END, text, atr)
-        self.scan_log["state"] = "disabled"
         self.scan_log.see(END)
     
     # Main form closing handler
     def main_form_close(self, event):
         if event.widget == self.main_form and self.scan_thread is not None:
-            self.scan_state = "COMPLETED"
-            while self.scan_state != "EXIT":
-                pass
-            self.scan_thread = None
+            if self.scan_state == "RUN":
+                self.scan_state = "STOP"
+                while self.scan_state != "COMPLETED":
+                    sleep(1)
+                self.scan_thread = None
 
-    # Scan
-    def scan_sub_task(self):
+    # Scan task
+    def scan_task(self):
         m_dummy     = self.dummy_mode.get()
         ds          = self.tg_disk_size - self.offset
         step        = ds / 1000.0
@@ -382,32 +382,23 @@ class MxfHddScaner:
             if f_offset >= self.tg_disk_size:
                 self.scan_progress["value"] = 100
                 self.scan_log_append("scan end.\n")
-                self.scan_state = "IDLE"
+                self.scan_state = "STOP"
                 l_offset = 0
         f_disk.close()
         self.offset = l_offset if l_offset != None else f_offset
         self.start_offset.delete(0, END)
         self.start_offset.insert(0, str(self.offset))
-    
-    # Scan task
-    def scan_task(self):
-        while self.scan_state != "COMPLETED":
-            while self.scan_state == "IDLE":
-                sleep(0.1)
-            # SCAN
-            if self.scan_state == "RUN":
-                self.scan_sub_task()
-                # Save last offset
-                fd = open("prev_offset.txt", "wt")
-                fd.write(str(self.offset))
-                fd.close()
-                # Stop -> enable UI
-                self.disk_list["state"]  = "normal"
-                self.dst_path["state"]   = "normal"
-                self.dst_select["state"] = "normal"
-                self.start_scan["state"] = "normal"
-                self.start_scan["text"]  = "Start"
-        self.scan_state = "EXIT"
+        # Save last offset
+        fd = open("prev_offset.txt", "wt")
+        fd.write(str(self.offset))
+        fd.close()
+        # Stop -> enable UI
+        self.disk_list["state"]  = "normal"
+        self.dst_path["state"]   = "normal"
+        self.dst_select["state"] = "normal"
+        self.start_scan["state"] = "normal"
+        self.start_scan["text"]  = "Start"
+        self.scan_state = "COMPLETED"
     
     # Run App
     def run(self):
@@ -417,6 +408,7 @@ class MxfHddScaner:
         self.destination  = None
         self.offset       = 0
         self.scan_state   = "IDLE"
+        self.scan_thread  = None
         # Make disk list
         self.disks = ["%s:" % i for i in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if path.exists("%s:" % i)]
         for disk in self.disks:
@@ -427,12 +419,9 @@ class MxfHddScaner:
             po = fd.read()
             fd.close()
             self.start_offset.delete(0, END)
-            self.start_offset.insert(0, po)         
-        # Scan thread
-        self.scan_thread = Thread(target=self.scan_task, args=(), daemon=True)
-        self.scan_thread.start()
+            self.start_offset.insert(0, po)
         # Run main form dispatch message cycle
         self.main_form.mainloop()
 
 
-MxfHddScaner().run()#1213385728
+MxfHddScaner().run()
