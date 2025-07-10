@@ -5,6 +5,8 @@ import sys, os
 import traceback
 
 
+# hdd constants
+HDD_SECTOR_SIZE    = 512
 # record keys
 FILE_HEADER_START  = [0x06, 0x0E, 0x2B, 0x34, 0x02, 0x05, 0x01, 0x01, 0x0D, 0x01, 0x02, 0x01, 0x01, 0x02, 0x04, 0x00]
 FILE_FOOTER_START  = [0x06, 0x0E, 0x2B, 0x34, 0x02, 0x05, 0x01, 0x01, 0x0D, 0x01, 0x02, 0x01, 0x01, 0x04, 0x04, 0x00]
@@ -25,6 +27,15 @@ DURATION_OFFSETS   = [0x0BC8, 0x0C27, 0x0CEF, 0x0D6F, 0x15F2, 0x0E37, 0x0EB7, 0x
 # offsets of timestamps in file header, file footer
 TIMESTAMPS_OFFSETS = [0x0C1B, 0x15E6]
 
+# load file header, file footer
+fh = open("header.mxf", "rb")
+fh.seek(0)
+file_header = fh.read(FILE_HEADER_SIZE)
+fh.close()
+fh = open("footer.mxf", "rb")
+fh.seek(0)
+file_footer = fh.read(FILE_FOOTER_SIZE)
+fh.close()
 
 # key compare
 def key_cmp(key, pattern):
@@ -49,11 +60,15 @@ def set_value(fs, base, offsets, value, length):
         fs.write(bytes(buffer))
 # check key in block
 def check_key(fs, offset, key):
+    adr = offset & 0xFFFFFFFFFFFFFE00
+    ost = offset - adr
     try:
-        fs.seek(offset)
+        fs.seek(adr)
     except:
         raise Exception("seek() error with offset = 0x%016X" % offset)
-    block = d.read(256)
+        #print("seek() error with offset = 0x%016X" % offset)
+        #return 0
+    block = fs.read(HDD_SECTOR_SIZE)[ost:]
     if len(block) == 0:
         return -1
     if key_cmp(block, key):
@@ -94,38 +109,24 @@ def main():
     disks = ["%s:" % i for i in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if os.path.exists("%s:" % i)]
     for d in range(len(disks)):
         print("%i - %s" % (d, disks[d]))
-    d = int(input("select disk: "))
-    disk = "\\\\.\\" + disks[d]
-
+    disk = open("\\\\.\\" + disks[int(input("select disk: "))], "rb")
     # destinaton path select
     path = input("select destination path: ")
-
-    # load file header, file footer
-    fs = open("header.mxf", "rb")
-    fs.seek(0)
-    file_header = fs.read(FILE_HEADER_SIZE)
-    fs.close()
-    fs = open("footer.mxf", "rb")
-    fs.seek(0)
-    file_footer = fs.read(FILE_FOOTER_SIZE)
-    fs.close()
-
     # scan cycle
-    d = open(disk, "rb")
     offset      = 0
     f_count     = 0
     f_prev_no   = None
     f_timestamp = None
     f_fname     = None
     while True:
-        r = scan_pass(d, offset)
+        r = scan_pass(disk, offset)
         # scan pass failed -> end of disk space
         if r == -1:
             break
         # another frame found
         if r == 1:
-            d.seek(offset)
-            buffer = d.read(FRAME_SIZE)
+            disk.seek(offset)
+            buffer = disk.read(FRAME_SIZE)
             # get metadata
             n = 0
             for i in range(5):
@@ -140,7 +141,7 @@ def main():
             f = from_bcd(buffer[0x03D])
             # complete file, if this frame is last in series
             if (f_prev_no != None) and ((n-1) != f_prev_no):
-                complete_file(fs, f_count, f_timestamp, f_fname)
+                complete_file(fh, f_count, f_timestamp, f_fname)
                 f_count   = 0
                 f_prev_no = None
                 f_fname   = None
@@ -148,10 +149,10 @@ def main():
             if f_count == 0:
                 f_timestamp = to_timestamp(h, m, s, f)
                 f_fname     = "%s\\%016X.mxf" % (path, offset)
-                fs = open(f_fname, "wb")
+                fh = open(f_fname, "wb")
             # copy frame to destinaton file
-            fs.seek(FILE_HEADER_SIZE+f_count*FRAME_SIZE)
-            fs.write(buffer)
+            fh.seek(FILE_HEADER_SIZE+f_count*FRAME_SIZE)
+            fh.write(buffer)
             # print frame info
             print("%016X: FRAME no=%i %04i-%02i-%02i %02i:%02i:%02i.%02i" % (offset, n, Y, M, D, h, m, s, f*4))
             # to next frame
@@ -161,7 +162,7 @@ def main():
         else:
             # the sequence was interrupted -> complete file
             if f_count != 0:
-                complete_file(fs, f_count, f_timestamp, f_fname)
+                complete_file(fh, f_count, f_timestamp, f_fname)
                 f_count   = 0
                 f_prev_no = None
                 f_fname   = None
@@ -170,7 +171,7 @@ def main():
             # scan progress info
             if (offset & 0x000000003FFFFFFF) == 0:
                 print("%iGb scaned." % (offset/(1024**3)))
-    d.close()
+    disk.close()
     print("done.")
 
 try:
