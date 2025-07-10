@@ -8,8 +8,8 @@ The disk with video files was formatted. The files obtained using the file recov
 
   By analyzing the correct file (with the same settings as the damaged ones), the file structure (for these settings) was revealed.
   
-  | Field          | Size      | KLV
-  |----------------|-----------|---------------------------------------------------------------------------------|
+  | Field          | Size      | KLV                                                                             |
+  | :------------: | :-------: | :-----------------------------------------------------------------------------: |
   | `FILE_HEADER`  | `11264`   | `06` `0E` `2B` `34` `02` `05` `01` `01` `0D` `01` `02` `01` `01` `02` `04` `00` |
   |----------------|-----------|---------------------------------------------------------------------------------|
   | `FRAME_HEADER` | `512`     | `06` `0E` `2B` `34` `02` `05` `01` `01` `0D` `01` `03` `01` `04` `01` `01` `00` |
