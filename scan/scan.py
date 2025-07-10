@@ -2,6 +2,7 @@
 
 
 import sys, os
+import traceback
 
 
 # record keys
@@ -48,7 +49,10 @@ def set_value(fs, base, offsets, value, length):
         fs.write(bytes(buffer))
 # check key in block
 def check_key(fs, offset, key):
-    fs.seek(offset)
+    try:
+        fs.seek(offset)
+    except:
+        raise Exception("seek() error with offset = 0x%016X" % offset)
     block = d.read(256)
     if len(block) == 0:
         return -1
@@ -84,86 +88,95 @@ def complete_file(fs, f_count, f_timestamp, f_fname):
     # log message
     print("%i frames saved to file <%s>\r\n" % (f_count, f_fname))
 
+# scan task
+def main():
+    # target disk select
+    disks = ["%s:" % i for i in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if os.path.exists("%s:" % i)]
+    for d in range(len(disks)):
+        print("%i - %s" % (d, disks[d]))
+    d = int(input("select disk: "))
+    disk = "\\\\.\\" + disks[d]
 
-# target disk select
-disks = ["%s:" % i for i in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if os.path.exists("%s:" % i)]
-for d in range(len(disks)):
-    print("%i - %s" % (d, disks[d]))
-d = int(input("select disk: "))
-disk = "\\\\.\\" + disks[d]
+    # destinaton path select
+    path = input("select destination path: ")
 
-# destinaton path select
-path = input("select destination path: ")
+    # load file header, file footer
+    fs = open("header.mxf", "rb")
+    fs.seek(0)
+    file_header = fs.read(FILE_HEADER_SIZE)
+    fs.close()
+    fs = open("footer.mxf", "rb")
+    fs.seek(0)
+    file_footer = fs.read(FILE_FOOTER_SIZE)
+    fs.close()
 
-# load file header, file footer
-fs = open("header.mxf", "rb")
-fs.seek(0)
-file_header = fs.read(FILE_HEADER_SIZE)
-fs.close()
-fs = open("footer.mxf", "rb")
-fs.seek(0)
-file_footer = fs.read(FILE_FOOTER_SIZE)
-fs.close()
+    # scan cycle
+    d = open(disk, "rb")
+    offset      = 0
+    f_count     = 0
+    f_prev_no   = None
+    f_timestamp = None
+    f_fname     = None
+    while True:
+        r = scan_pass(d, offset)
+        # scan pass failed -> end of disk space
+        if r == -1:
+            break
+        # another frame found
+        if r == 1:
+            d.seek(offset)
+            buffer = d.read(FRAME_SIZE)
+            # get metadata
+            n = 0
+            for i in range(5):
+                n <<= 8
+                n |= buffer[0x16+i]
+            Y = from_bcd(buffer[0x043])
+            M = from_bcd(buffer[0x042])
+            D = from_bcd(buffer[0x041])
+            h = from_bcd(buffer[0x040])
+            m = from_bcd(buffer[0x03F])
+            s = from_bcd(buffer[0x03E])
+            f = from_bcd(buffer[0x03D])
+            # complete file, if this frame is last in series
+            if (f_prev_no != None) and ((n-1) != f_prev_no):
+                complete_file(fs, f_count, f_timestamp, f_fname)
+                f_count   = 0
+                f_prev_no = None
+                f_fname   = None
+            # init first frame in current series
+            if f_count == 0:
+                f_timestamp = to_timestamp(h, m, s, f)
+                f_fname     = "%s\\%016X.mxf" % (path, offset)
+                fs = open(f_fname, "wb")
+            # copy frame to destinaton file
+            fs.seek(FILE_HEADER_SIZE+f_count*FRAME_SIZE)
+            fs.write(buffer)
+            # print frame info
+            print("%016X: FRAME no=%i %04i-%02i-%02i %02i:%02i:%02i.%02i" % (offset, n, Y, M, D, h, m, s, f*4))
+            # to next frame
+            f_count  += 1
+            f_prev_no = n
+            offset   += FRAME_SIZE
+        else:
+            # the sequence was interrupted -> complete file
+            if f_count != 0:
+                complete_file(fs, f_count, f_timestamp, f_fname)
+                f_count   = 0
+                f_prev_no = None
+                f_fname   = None
+            # jump to next block
+            offset += 256
+            # scan progress info
+            if (offset & 0x000000003FFFFFFF) == 0:
+                print("%iGb scaned." % (offset/(1024**3)))
+    d.close()
+    print("done.")
 
-# scan cycle
-d = open(disk, "rb")
-offset      = 0
-f_count     = 0
-f_prev_no   = None
-f_timestamp = None
-f_fname     = None
-while True:
-    r = scan_pass(d, offset)
-    # scan pass failed -> end of disk space
-    if r == -1:
-        break
-    # another frame found
-    if r == 1:
-        d.seek(offset)
-        buffer = d.read(FRAME_SIZE)
-        # get metadata
-        n = 0
-        for i in range(5):
-            n <<= 8
-            n |= buffer[0x16+i]
-        Y = from_bcd(buffer[0x043])
-        M = from_bcd(buffer[0x042])
-        D = from_bcd(buffer[0x041])
-        h = from_bcd(buffer[0x040])
-        m = from_bcd(buffer[0x03F])
-        s = from_bcd(buffer[0x03E])
-        f = from_bcd(buffer[0x03D])
-        # complete file, if this frame is last in series
-        if (f_prev_no != None) and ((n-1) != f_prev_no):
-            complete_file(fs, f_count, f_timestamp, f_fname)
-            f_count   = 0
-            f_prev_no = None
-            f_fname   = None
-        # init first frame in current series
-        if f_count == 0:
-            f_timestamp = to_timestamp(h, m, s, f)
-            f_fname     = "%s\\%016X.mxf" % (path, offset)
-            fs = open(f_fname, "wb")
-        # copy frame to destinaton file
-        fs.seek(FILE_HEADER_SIZE+f_count*FRAME_SIZE)
-        fs.write(buffer)
-        # print frame info
-        print("%016X: FRAME no=%i %04i-%02i-%02i %02i:%02i:%02i.%02i" % (offset, n, Y, M, D, h, m, s, f*4))
-        # to next frame
-        f_count  += 1
-        f_prev_no = n
-        offset   += FRAME_SIZE
-    else:
-        # the sequence was interrupted -> complete file
-        if f_count != 0:
-            complete_file(fs, f_count, f_timestamp, f_fname)
-            f_count   = 0
-            f_prev_no = None
-            f_fname   = None
-        # jump to next block
-        offset += 256
-        # scan progress info
-        if (offset & 0x000000003FFFFFFF) == 0:
-            print("%iGb scaned." % (offset/(1024**3)))
-d.close()
-print("done.")
+try:
+    main()
+except Exception as ex:
+    print("main function ended with error: %s" % ex)
+    traceback.print_exc()
+print("press any key and <Enter> ...")
+input()
